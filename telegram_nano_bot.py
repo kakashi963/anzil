@@ -1,10 +1,12 @@
 """
-Nano Banana Pro Telegram Bot (Universal + Image Edit)
+Smart Nano Banana Pro Bot
 
-Commands:
-  /start          - Help
-  /nano prompt    - Text → Image (any field)
-  /nanoedit prompt (reply to a photo) - Image → Image edit
+Behaviors:
+- /start, /help, /about
+- /nano prompt        -> text -> image  (explicit)
+- reply photo + /nanoedit prompt -> image -> image  (explicit)
+- plain text message  -> treated as /nano
+- reply to photo with plain text -> treated as /nanoedit
 """
 
 import asyncio
@@ -23,8 +25,8 @@ from telegram.ext import (
 )
 
 # === CONFIG ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")          # set on Railway
-NANO_API_KEY   = os.getenv("NANO_API_KEY") or "a699600330d950661ab22188a29a1050"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+NANO_API_KEY   = os.getenv("NANO_API_KEY", "a699600330d950661ab22188a29a1050")
 NANO_BASE_URL  = "https://api.nanobananaapi.ai/api/v1/nanobanana"
 
 logging.basicConfig(
@@ -45,7 +47,6 @@ class NanoAPI:
         num_images: int = 1,
         image_urls: Optional[list] = None,
     ) -> str:
-        """Create generation task (TEXTTOIAMGE or IMAGETOIAMGE)."""
         data = {
             "prompt": prompt,
             "type": type_,
@@ -82,92 +83,84 @@ class NanoAPI:
         prompt: str,
         type_: str = "TEXTTOIAMGE",
         image_urls: Optional[list] = None,
-        max_wait: int = 300,
+        max_wait: int = 240,
     ) -> str:
-        """High-level: create task and poll until URL ready."""
         task_id = self._generate_task(prompt, type_=type_, image_urls=image_urls)
-        start = 0
-        while start < max_wait:
+        waited = 0
+        while waited < max_wait:
             data = self._get_status(task_id)
             flag = data.get("successFlag")
             if flag == 1:
                 return data["response"]["resultImageUrl"]
             if flag in (2, 3):
                 raise ValueError(data.get("errorMessage", "Generation failed"))
-            await asyncio.sleep(5)
-            start += 5
+            await asyncio.sleep(4)
+            waited += 4
         raise TimeoutError("Generation timeout")
 
 
 nano_api = NanoAPI(NANO_API_KEY)
 
+HELP_TEXT = (
+    "🤖 *Smart Nano Banana Pro Bot*\n\n"
+    "How to use:\n"
+    "• Just *send a message* → I generate an image.\n"
+    "   `Kerala beach cyberpunk city at night`\n"
+    "• Send a *photo*, then reply to it with text → I edit that image.\n"
+    "   `make this look like a movie poster`\n\n"
+    "Commands (optional):\n"
+    "• `/nano prompt` – force text → image\n"
+    "• `/nanoedit prompt` (reply to photo) – force image edit\n"
+    "• `/help` – show this help\n"
+)
 
-# === HELP / START ===
+# === BASIC COMMANDS ===
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(HELP_TEXT, parse_mode="Markdown")
+
+
+async def about_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🤖 *Nano Banana Pro Bot*\n\n"
-        "Works for *any field*:\n"
-        "• Product photos: `/nano studio photo of Nike running shoes on white background`\n"
-        "• Architecture: `/nano modern glass house on a cliff at night`\n"
-        "• Cars: `/nano red Lamborghini on wet road, cinematic lighting`\n"
-        "• Portraits: `/nano realistic portrait of a man in Kerala, 50mm lens`\n\n"
-        "*Commands:*\n"
-        "• `/nano prompt` – text → image\n"
-        "• Reply to a photo with `/nanoedit prompt` – edit/transform that image\n\n"
-        "Try: `/nano Kerala beach at sunrise, ultra realistic 4K`"
+        "ℹ️ *About*\n\n"
+        "• Model: Nano Banana Pro (Gemini 3 Pro Image)\n"
+        "• Modes: text→image, image→image\n"
+        "• You can just chat naturally, no need to type commands."
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-# === TEXT → IMAGE ===
-async def nano_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text(
-            "Usage: `/nano your prompt`\nExample: `/nano product photo of a black gaming mouse on a wooden desk`",
-            parse_mode="Markdown",
-        )
-        return
+# === CORE HELPERS ===
 
-    prompt = " ".join(context.args)
+async def text_to_image(update: Update, prompt: str):
     await update.message.reply_text(f"🎨 Generating:\n`{prompt}`", parse_mode="Markdown")
-
     try:
-        image_url = await nano_api.run_job(prompt, type_="TEXTTOIAMGE")
-        await update.message.reply_photo(
-            photo=image_url,
-            caption=f"✨ {prompt}",
-        )
+        url = await nano_api.run_job(prompt, type_="TEXTTOIAMGE")
+        await update.message.reply_photo(photo=url, caption=f"✨ {prompt}")
     except Exception as e:
-        logger.exception("nano error")
+        logger.exception("text_to_image error")
         await update.message.reply_text(f"❌ Error: {e}")
 
 
-# === IMAGE → IMAGE (edit / transform) ===
-async def nanoedit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reply to a photo with /nanoedit new prompt to edit it."""
-    if not update.message.reply_to_message or not update.message.reply_to_message.photo:
-        await update.message.reply_text(
-            "Reply to an image with `/nanoedit your prompt`.\n"
-            "Example: reply to a selfie → `/nanoedit make this look like a movie poster`",
+async def image_to_image(update: Update, prompt: str):
+    msg = update.message
+    if not msg.reply_to_message or not msg.reply_to_message.photo:
+        await msg.reply_text(
+            "Reply to a *photo* with your edit text.\n"
+            "Example: reply → `make this look like a movie poster`",
             parse_mode="Markdown",
         )
         return
 
-    if not context.args:
-        await update.message.reply_text(
-            "Add a prompt.\nExample: `/nanoedit turn this into cyberpunk night scene`",
-            parse_mode="Markdown",
-        )
-        return
-
-    prompt = " ".join(context.args)
-
-    # get largest size of replied photo
-    photo = update.message.reply_to_message.photo[-1]
+    photo = msg.reply_to_message.photo[-1]
     file = await photo.get_file()
-    image_url = file.file_path  # Telegram CDN URL
+    image_url = file.file_path
 
-    await update.message.reply_text(
+    await msg.reply_text(
         f"🖼 Editing image with prompt:\n`{prompt}`", parse_mode="Markdown"
     )
 
@@ -175,13 +168,56 @@ async def nanoedit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result_url = await nano_api.run_job(
             prompt, type_="IMAGETOIAMGE", image_urls=[image_url]
         )
-        await update.message.reply_photo(
-            photo=result_url,
-            caption=f"✨ Edited: {prompt}",
-        )
+        await msg.reply_photo(photo=result_url, caption=f"✨ Edited: {prompt}")
     except Exception as e:
-        logger.exception("nanoedit error")
-        await update.message.reply_text(f"❌ Error: {e}")
+        logger.exception("image_to_image error")
+        await msg.reply_text(f"❌ Error: {e}")
+
+
+# === EXPLICIT COMMANDS (still available) ===
+
+async def nano_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/nano your prompt`", parse_mode="Markdown"
+        )
+        return
+    prompt = " ".join(context.args)
+    await text_to_image(update, prompt)
+
+
+async def nanoedit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage (reply to photo): `/nanoedit your prompt`", parse_mode="Markdown"
+        )
+        return
+    prompt = " ".join(context.args)
+    await image_to_image(update, prompt)
+
+
+# === SMART HANDLER (no command needed) ===
+
+async def smart_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    - If message is text and NOT a command:
+        - If it's a reply to a photo -> treat as nanoedit
+        - Else -> treat as nano (text->image)
+    """
+    msg = update.message
+    if not msg or not msg.text:
+        return
+
+    # ignore commands (handled separately)
+    if msg.text.startswith("/"):
+        return
+
+    prompt = msg.text.strip()
+    # If replying to a photo -> edit it
+    if msg.reply_to_message and msg.reply_to_message.photo:
+        await image_to_image(update, prompt)
+    else:
+        await text_to_image(update, prompt)
 
 
 def main():
@@ -191,11 +227,17 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("about", about_cmd))
     app.add_handler(CommandHandler("nano", nano_cmd))
     app.add_handler(CommandHandler("nanoedit", nanoedit_cmd))
 
-    print("🤖 Universal Nano Banana Pro Bot running...")
+    # Smart free‑text handler
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, smart_handler))
+
+    print("🤖 Smart Nano Banana Pro Bot running...")
     app.run_polling(drop_pending_updates=True)
 
 

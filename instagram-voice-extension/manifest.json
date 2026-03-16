@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Instagram Voice Collector",
+  "description": "Collect, preview, and download voice messages from Instagram Web chat.",
+  "version": "1.0.0",
+  "permissions": [
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.instagram.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.instagram.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Toggle Voice Collector"
+  }
+}
